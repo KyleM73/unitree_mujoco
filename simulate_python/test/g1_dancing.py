@@ -11,15 +11,11 @@ from unitree_sdk2py.core.channel import (
     ChannelFactoryInitialize,
 )
 from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
-from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowState_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_
 from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 from unitree_sdk2py.utils.crc import CRC
 from unitree_sdk2py.utils.thread import RecurrentThread
-from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
-    MotionSwitcherClient,
-)
-from typing import Tuple, List
+from typing import Tuple, List, Optional
 
 import numpy as np
 
@@ -37,9 +33,9 @@ DISCO_UP = [
     np.pi / 2,
     -np.pi / 8,
     0.0,
-    0.0,
-    0.0,
-    0.0,
+    # 0.0,
+    # 0.0,
+    # 0.0,
 ]
 
 DISCO_DOWN = [
@@ -53,9 +49,9 @@ DISCO_DOWN = [
     np.pi / 2,
     -np.pi / 8,
     0.0,
-    0.0,
-    0.0,
-    0.0,
+    # 0.0,
+    # 0.0,
+    # 0.0,
 ]
 
 SPRINKLER_OPEN = [
@@ -69,9 +65,9 @@ SPRINKLER_OPEN = [
     0.0,
     -np.pi / 3,
     0.0,
-    0.0,
-    0.0,
-    0.0,
+    # 0.0,
+    # 0.0,
+    # 0.0,
 ]
 
 SPRINKLER_CLOSED = [
@@ -85,9 +81,9 @@ SPRINKLER_CLOSED = [
     0.0,
     -np.pi / 3,
     0.0,
-    0.0,
-    0.0,
-    0.0,
+    # 0.0,
+    # 0.0,
+    # 0.0,
 ]
 
 DISCO_CMD = ([1.1 * 60.0 / DISCO_BPM, 0.9 * 60.0 / DISCO_BPM], [DISCO_DOWN, DISCO_UP])
@@ -153,16 +149,17 @@ class JointAnglesController:
         self._time: float = 0.0
         self._control_dt: float = 0.02
         self._low_cmd: LowCmd_ = unitree_hg_msg_dds__LowCmd_()
-        self._low_state: LowState_ | None = None
+        self._low_state: Optional[LowState_] = None
         self._crc = CRC()
 
         self._mutex: Lock = Lock()
         self._done_first_update: Event = Event()
-        self._low_cmd_write_thread_ptr: RecurrentThread | None = None
+        self._low_cmd_write_thread_ptr: Optional[RecurrentThread] = None
 
-        self._cmd_queue: Tuple[List[float], List[List[float]]] | None = None
-        self._interp_init: CubicSpline | None = None
-        self._interp: CubicSpline | None = None
+        self._cmd_queue: Optional[Tuple[List[float], List[List[float]]]] = None
+        self._init_cmd_queue: Optional[Tuple[List[float], List[List[float]]]] = None
+        self._interp_init: Optional[CubicSpline] = None
+        self._interp: Optional[CubicSpline] = None
         self._start_time: float = 0.0
         self._max_time: float = 0.0
         self._loop: bool = False
@@ -178,6 +175,25 @@ class JointAnglesController:
             G1JointIndex.RightShoulderYaw,
             G1JointIndex.RightElbow,
             G1JointIndex.RightWristRoll,
+            # G1JointIndex.WaistYaw,
+            # G1JointIndex.WaistRoll,
+            # G1JointIndex.WaistPitch,
+        ]
+        self._leg_joints: List[int] = [
+            G1JointIndex.LeftHipPitch,
+            G1JointIndex.LeftHipRoll,
+            G1JointIndex.LeftHipYaw,
+            G1JointIndex.LeftKnee,
+            G1JointIndex.LeftAnklePitch,
+            G1JointIndex.LeftAnkleRoll,
+            G1JointIndex.RightHipPitch,
+            G1JointIndex.RightHipRoll,
+            G1JointIndex.RightHipYaw,
+            G1JointIndex.RightKnee,
+            G1JointIndex.RightAnklePitch,
+            G1JointIndex.RightAnkleRoll,
+        ]
+        self._hip_joints: List[int] = [
             G1JointIndex.WaistYaw,
             G1JointIndex.WaistRoll,
             G1JointIndex.WaistPitch,
@@ -188,11 +204,11 @@ class JointAnglesController:
         return not self._loop and self._time > self._max_time
 
     def init(self, cmd_queue: Tuple[List[float], List[List[float]]], loop=True) -> None:
-        # create publisher #
+        # create publisher
         self._arm_sdk_publisher = ChannelPublisher("rt/lowcmd", LowCmd_)
         self._arm_sdk_publisher.Init()
 
-        # create subscriber #
+        # create subscriber
         self.lowstate_subscriber = ChannelSubscriber("rt/lowstate", LowState_)
         self.lowstate_subscriber.Init(self._low_state_handler, 10)
 
@@ -219,21 +235,40 @@ class JointAnglesController:
         self._time += self._control_dt
 
         for i, joint in enumerate(self.arm_joints):
-            pos = self.interp(self._time)[i]
             self._update_low_cmd(
                 joint,
-                pos,
+                self.interp(self._time)[i],
+                self.interp(self._time, 1)[i],
+                self.kp,
+                self.kd,
             )
+        for joint in self._leg_joints:
+            self._update_low_cmd(joint, 0.0, 0.0, self.kp, self.kd)
+        for joint in self._hip_joints:
+            self._update_low_cmd(joint, 0.0, 0.0, 0.0, 0.0)
 
         self._low_cmd.crc = self._crc.Crc(self._low_cmd)
         self._arm_sdk_publisher.Write(self._low_cmd)
 
-    def _update_low_cmd(self, joint: int, pos: float) -> None:
-        self._low_cmd.motor_cmd[joint].tau = 0.0
-        self._low_cmd.motor_cmd[joint].q = pos
-        self._low_cmd.motor_cmd[joint].dq = 0.0
-        self._low_cmd.motor_cmd[joint].kp = self.kp
-        self._low_cmd.motor_cmd[joint].kd = self.kd
+    def _update_low_cmd(
+        self,
+        joint: int,
+        q_des: float,
+        dq_des,
+        kp: Optional[float] = None,
+        kd: Optional[float] = None,
+    ) -> None:
+        if kp is None:
+            kp = self.kp
+        if kd is None:
+            kd = self.kd
+        # q = self._low_state.motor_state[joint].q
+        # dq = self._low_state.motor_state[joint].dq
+        # self._low_cmd.motor_cmd[joint].tau = kp * (q_des - q) + kd * (dq_des - dq)
+        self._low_cmd.motor_cmd[joint].q = q_des
+        self._low_cmd.motor_cmd[joint].dq = dq_des
+        self._low_cmd.motor_cmd[joint].kp = kp
+        self._low_cmd.motor_cmd[joint].kd = kd
 
     def _compute_interpolation(self, init_msg: LowState_) -> None:
         assert self._cmd_queue is not None
@@ -244,31 +279,44 @@ class JointAnglesController:
             self.arm_joints
         ].tolist()
         abs_timesteps = list(accumulate(timesteps))
-        np_timesteps = np.array(abs_timesteps)
 
         self._start_time = timesteps[0]
         self._max_time = max(abs_timesteps)
-        self._interp_init = CubicSpline(
-            [0.0, self._start_time], [init_pos, joint_cmds[0]]
+        self._init_cmd_queue = ([0.0, self._start_time], [init_pos, joint_cmds[0]])
+        self._interp = make_interp_spline(
+            [*abs_timesteps, self._start_time + self._max_time],
+            [*joint_cmds, joint_cmds[0]],
+            bc_type="periodic",
         )
-        self._interp = CubicSpline(
-            [
-                *abs_timesteps,
-                *(np_timesteps + self._max_time).tolist(),
-            ],
-            [*joint_cmds, *joint_cmds],
+        self._interp_init = CubicSpline(
+            self._init_cmd_queue[0],
+            self._init_cmd_queue[1],
+            bc_type=((1, np.zeros(10)), (1, self._interp(self._start_time, 1))),
         )
 
-    def interp(self, time) -> np.ndarray:
+    def interp(self, time: float, order: int = 0) -> np.ndarray:
         assert self._interp is not None and self._interp_init is not None
         interp_time = (time - self._start_time) % self._max_time + self._start_time
         return (
-            self._interp(interp_time)
+            self._interp(interp_time, order)
             if time >= self._start_time
-            else self._interp_init(time)
+            else self._interp_init(time, order)
         )
 
-    def graph_interp(self, joint_idx: int):
+    def vectorized_interp(self, time: np.ndarray, order: int = 0) -> np.ndarray:
+        assert self._interp is not None and self._interp_init is not None
+        time_ar = np.repeat(
+            (time > self._start_time)[:, np.newaxis], len(self.arm_joints), -1
+        )
+        return np.where(
+            time_ar,
+            self._interp(
+                (time - self._start_time) % self._max_time + self._start_time, order
+            ),
+            self._interp_init(time, order),
+        )
+
+    def graph_interp(self, joint_idx: int, save: bool = False):
         assert self._interp is not None and joint_idx < len(self.arm_joints)
         xs = np.arange(
             self._start_time - 0.5, self._max_time + self._start_time + 0.5, 0.1
@@ -282,7 +330,99 @@ class JointAnglesController:
 
         ax.legend(loc="lower left", ncol=2)
 
-        plt.show()
+        if save:
+            plt.savefig("joints.png")
+        else:
+            plt.show()
+
+    def _graph_all_interp(
+        self,
+        interp: CubicSpline,
+        *,
+        xmin: float,
+        xmax: float,
+        x_pts: List[float],
+        y_pts: List[List[float]],
+        save: bool = False,
+        plot_prefix: str = "",
+        vlines: List[float] = [],
+    ) -> None:
+        xs = np.linspace(xmin, xmax, 100)
+        pos_fig, pos_ax = plt.subplots(figsize=(6.5, 4))
+        vel_fig, vel_ax = plt.subplots(figsize=(6.5, 4))
+        acc_fig, acc_ax = plt.subplots(figsize=(6.5, 4))
+
+        labels = np.arange(len(self.arm_joints))
+        pos_ax.plot(x_pts, y_pts, marker="o", linestyle="none")
+        pos_ax.plot(xs, interp(xs), label=labels)
+        vel_ax.plot(xs, interp(xs, 1), label=labels)
+        acc_ax.plot(xs, interp(xs, 2), label=labels)
+
+        for ax in [pos_ax, vel_ax, acc_ax]:
+            ax.set_xlim(xmin, xmax)
+            ax.legend(loc="lower left", ncol=2)
+            for vline in vlines:
+                ax.axvline(vline, ls=":", c=(1, 0, 0))
+
+        pos_ax.set_title("Joint Position Interpolation")
+        vel_ax.set_title("Joint Velocity Interpolation")
+        acc_ax.set_title("Joint Acceleration Interpolation")
+        if save:
+            pos_fig.savefig(f"{plot_prefix}joint_pos.png")
+            vel_fig.savefig(f"{plot_prefix}joint_vel.png")
+            acc_fig.savefig(f"{plot_prefix}joint_acc.png")
+        else:
+            plt.show()
+
+    def graph_main_interp(
+        self,
+        *,
+        save: bool = False,
+    ) -> None:
+        self._graph_all_interp(
+            self._interp,
+            xmin=self._start_time,
+            xmax=self._max_time + self._start_time,
+            x_pts=[
+                *list(accumulate(self._cmd_queue[0])),
+                self._max_time + self._start_time,
+            ],
+            y_pts=[*self._cmd_queue[1], self._cmd_queue[1][0]],
+            save=save,
+        )
+
+    def graph_init_interp(
+        self,
+        *,
+        save: bool = False,
+    ) -> None:
+        self._graph_all_interp(
+            self._interp_init,
+            xmin=0.0,
+            xmax=self._start_time,
+            x_pts=self._init_cmd_queue[0],
+            y_pts=self._init_cmd_queue[1],
+            save=save,
+            plot_prefix="init_",
+        )
+
+    def graph_full_interp(self, *, save: bool = False) -> None:
+        x_pts = [
+            *self._init_cmd_queue[0],
+            *list(accumulate(self._cmd_queue[0])),
+            self._max_time + self._start_time,
+        ]
+        y_pts = [*self._init_cmd_queue[1], *self._cmd_queue[1], self._cmd_queue[1][0]]
+        self._graph_all_interp(
+            self.vectorized_interp,
+            xmin=0.0,
+            xmax=self._max_time + self._start_time,
+            x_pts=x_pts,
+            y_pts=y_pts,
+            save=save,
+            plot_prefix="full_",
+            vlines=[self._start_time],
+        )
 
 
 if __name__ == "__main__":
@@ -293,7 +433,10 @@ if __name__ == "__main__":
     controller.start()
 
     time.sleep(1)
-    controller.graph_interp(1)
+    # controller.graph_main_interp(save=True)
+    # controller.graph_init_interp(save=True)
+    controller.graph_full_interp(save=True)
+    print("Created graphs")
 
     while True:
         time.sleep(1)
