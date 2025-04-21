@@ -1,7 +1,7 @@
 import time
 import sys
 from threading import Lock, Event
-from scipy.interpolate import CubicSpline, PchipInterpolator, make_interp_spline
+from scipy.interpolate import make_interp_spline, PPoly
 from itertools import accumulate
 import matplotlib.pyplot as plt
 
@@ -86,7 +86,7 @@ SPRINKLER_CLOSED = [
     # 0.0,
 ]
 
-DISCO_CMD = ([1.1 * 60.0 / DISCO_BPM, 0.9 * 60.0 / DISCO_BPM], [DISCO_DOWN, DISCO_UP])
+DISCO_CMD = ([60.0 / DISCO_BPM, 60.0 / DISCO_BPM], [DISCO_DOWN, DISCO_UP])
 SPRINKLER_CMD = (
     [60.0 / SPRINKLER_BPM, 60.0 / SPRINKLER_BPM],
     [SPRINKLER_OPEN, SPRINKLER_CLOSED],
@@ -158,8 +158,8 @@ class JointAnglesController:
 
         self._cmd_queue: Optional[Tuple[List[float], List[List[float]]]] = None
         self._init_cmd_queue: Optional[Tuple[List[float], List[List[float]]]] = None
-        self._interp_init: Optional[CubicSpline] = None
-        self._interp: Optional[CubicSpline] = None
+        self._interp_init: Optional[PPoly] = None
+        self._interp: Optional[PPoly] = None
         self._start_time: float = 0.0
         self._max_time: float = 0.0
         self._loop: bool = False
@@ -287,11 +287,19 @@ class JointAnglesController:
             [*abs_timesteps, self._start_time + self._max_time],
             [*joint_cmds, joint_cmds[0]],
             bc_type="periodic",
+            k=5,
         )
-        self._interp_init = CubicSpline(
+        self._interp_init = make_interp_spline(
             self._init_cmd_queue[0],
             self._init_cmd_queue[1],
-            bc_type=((1, np.zeros(10)), (1, self._interp(self._start_time, 1))),
+            k=5,
+            bc_type=(
+                [(1, np.zeros(10)), (2, np.zeros(10))],
+                [
+                    (1, self._interp(self._start_time, 1)),
+                    (2, self._interp(self._start_time, 2)),
+                ],
+            ),
         )
 
     def interp(self, time: float, order: int = 0) -> np.ndarray:
@@ -337,7 +345,7 @@ class JointAnglesController:
 
     def _graph_all_interp(
         self,
-        interp: CubicSpline,
+        interp: PPoly,
         *,
         xmin: float,
         xmax: float,
@@ -374,39 +382,7 @@ class JointAnglesController:
         else:
             plt.show()
 
-    def graph_main_interp(
-        self,
-        *,
-        save: bool = False,
-    ) -> None:
-        self._graph_all_interp(
-            self._interp,
-            xmin=self._start_time,
-            xmax=self._max_time + self._start_time,
-            x_pts=[
-                *list(accumulate(self._cmd_queue[0])),
-                self._max_time + self._start_time,
-            ],
-            y_pts=[*self._cmd_queue[1], self._cmd_queue[1][0]],
-            save=save,
-        )
-
-    def graph_init_interp(
-        self,
-        *,
-        save: bool = False,
-    ) -> None:
-        self._graph_all_interp(
-            self._interp_init,
-            xmin=0.0,
-            xmax=self._start_time,
-            x_pts=self._init_cmd_queue[0],
-            y_pts=self._init_cmd_queue[1],
-            save=save,
-            plot_prefix="init_",
-        )
-
-    def graph_full_interp(self, *, save: bool = False) -> None:
+    def graph_full_interp(self, *, save: bool = False, prefix: str = "") -> None:
         x_pts = [
             *self._init_cmd_queue[0],
             *list(accumulate(self._cmd_queue[0])),
@@ -420,7 +396,7 @@ class JointAnglesController:
             x_pts=x_pts,
             y_pts=y_pts,
             save=save,
-            plot_prefix="full_",
+            plot_prefix=prefix,
             vlines=[self._start_time],
         )
 
@@ -429,13 +405,13 @@ if __name__ == "__main__":
     ChannelFactoryInitialize(1, "lo")
 
     controller = JointAnglesController()
-    controller.init(DISCO_CMD)
+    controller.init(SPRINKLER_CMD)
     controller.start()
 
     time.sleep(1)
     # controller.graph_main_interp(save=True)
     # controller.graph_init_interp(save=True)
-    controller.graph_full_interp(save=True)
+    controller.graph_full_interp(save=True, prefix="sprinkler_")
     print("Created graphs")
 
     while True:
