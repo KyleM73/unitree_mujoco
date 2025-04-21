@@ -20,7 +20,7 @@ from typing import Tuple, List, Optional
 import numpy as np
 
 SPRINKLER_BPM = 50  # 220
-DISCO_BPM = 50  # 110
+DISCO_BPM = 110
 
 DISCO_UP = [
     -np.pi / 2,
@@ -145,6 +145,7 @@ class JointAnglesController:
     def __init__(self):
         self.kp: float = 20.0
         self.kd: float = 1.5
+        self._n_iters: int = 4
 
         self._time: float = 0.0
         self._control_dt: float = 0.02
@@ -158,11 +159,20 @@ class JointAnglesController:
 
         self._cmd_queue: Optional[Tuple[List[float], List[List[float]]]] = None
         self._init_cmd_queue: Optional[Tuple[List[float], List[List[float]]]] = None
+        self._finish_cmd_queue: Optional[Tuple[List[float], List[List[float]]]] = None
+
         self._interp_init: Optional[PPoly] = None
         self._interp: Optional[PPoly] = None
-        self._start_time: float = 0.0
+        self._interp_finish: Optional[PPoly] = None
+        self._start_time: float = 5.0
         self._max_time: float = 0.0
         self._loop: bool = False
+
+        self._joint_data: Tuple[List[float], List[List[float]], List[List[float]]] = (
+            [],
+            [],
+            [],
+        )
 
         self.arm_joints: List[int] = [
             G1JointIndex.LeftShoulderPitch,
@@ -200,8 +210,12 @@ class JointAnglesController:
         ]
 
     @property
+    def _done_time(self) -> float:
+        return self._max_time * self._n_iters + self._start_time
+
+    @property
     def done(self) -> bool:
-        return not self._loop and self._time > self._max_time
+        return self._time >= self._done_time + self._start_time
 
     def init(self, cmd_queue: Tuple[List[float], List[List[float]]], loop=True) -> None:
         # create publisher
@@ -224,6 +238,10 @@ class JointAnglesController:
 
     def _low_state_handler(self, msg: LowState_) -> None:
         self._low_state = msg
+        if not self.done:
+            self._joint_data[0].append(self._time)
+            self._joint_data[1].append(self._arm_joint_pos_from_msg(msg))
+            self._joint_data[2].append(self._arm_joint_vel_from_msg(msg))
         if not self._done_first_update.is_set():
             self._compute_interpolation(msg)
             self._done_first_update.set()
@@ -270,21 +288,32 @@ class JointAnglesController:
         self._low_cmd.motor_cmd[joint].kp = kp
         self._low_cmd.motor_cmd[joint].kd = kd
 
+    def _arm_joint_pos_from_msg(self, msg: LowState_) -> List[float]:
+        return np.array(list(map(lambda state: state.q, msg.motor_state)))[
+            self.arm_joints
+        ].tolist()
+
+    def _arm_joint_vel_from_msg(self, msg: LowState_) -> List[float]:
+        return np.array(list(map(lambda state: state.dq, msg.motor_state)))[
+            self.arm_joints
+        ].tolist()
+
     def _compute_interpolation(self, init_msg: LowState_) -> None:
         assert self._cmd_queue is not None
         timesteps, joint_cmds = self._cmd_queue
         assert len(timesteps) == len(joint_cmds)
 
-        init_pos = np.array(list(map(lambda state: state.q, init_msg.motor_state)))[
-            self.arm_joints
-        ].tolist()
+        init_pos = self._arm_joint_pos_from_msg(init_msg)
         abs_timesteps = list(accumulate(timesteps))
 
-        self._start_time = timesteps[0]
         self._max_time = max(abs_timesteps)
         self._init_cmd_queue = ([0.0, self._start_time], [init_pos, joint_cmds[0]])
+        self._finish_cmd_queue = (
+            [0.0, self._start_time],
+            [joint_cmds[0], np.zeros(len(self.arm_joints)).tolist()],
+        )
         self._interp = make_interp_spline(
-            [*abs_timesteps, self._start_time + self._max_time],
+            [0.0, *abs_timesteps],
             [*joint_cmds, joint_cmds[0]],
             bc_type="periodic",
             k=5,
@@ -296,52 +325,56 @@ class JointAnglesController:
             bc_type=(
                 [(1, np.zeros(10)), (2, np.zeros(10))],
                 [
-                    (1, self._interp(self._start_time, 1)),
-                    (2, self._interp(self._start_time, 2)),
+                    (1, self._interp(0.0, 1)),
+                    (2, self._interp(0.0, 2)),
                 ],
+            ),
+        )
+        self._interp_finish = make_interp_spline(
+            self._finish_cmd_queue[0],
+            self._finish_cmd_queue[1],
+            k=5,
+            bc_type=(
+                [
+                    (1, self._interp(0.0, 1)),
+                    (2, self._interp(0.0, 2)),
+                ],
+                [(1, np.zeros(10)), (2, np.zeros(10))],
             ),
         )
 
     def interp(self, time: float, order: int = 0) -> np.ndarray:
-        assert self._interp is not None and self._interp_init is not None
-        interp_time = (time - self._start_time) % self._max_time + self._start_time
-        return (
-            self._interp(interp_time, order)
-            if time >= self._start_time
-            else self._interp_init(time, order)
+        assert (
+            self._interp is not None
+            and self._interp_init is not None
+            and self._interp_finish is not None
         )
+        if time < self._start_time:
+            return self._interp_init(time, order)
+        elif time < self._done_time:
+            return self._interp((time - self._start_time) % self._max_time, order)
+        elif time < self._done_time + self._start_time:
+            return self._interp_finish(time - self._done_time, order)
+        else:
+            return self._interp_finish(self._done_time + self._start_time)
 
     def vectorized_interp(self, time: np.ndarray, order: int = 0) -> np.ndarray:
         assert self._interp is not None and self._interp_init is not None
-        time_ar = np.repeat(
+        time_start_ar = np.repeat(
             (time > self._start_time)[:, np.newaxis], len(self.arm_joints), -1
         )
+        time_end_ar = np.repeat(
+            (time <= self._done_time)[:, np.newaxis], len(self.arm_joints), -1
+        )
         return np.where(
-            time_ar,
-            self._interp(
-                (time - self._start_time) % self._max_time + self._start_time, order
+            time_end_ar,
+            np.where(
+                time_start_ar,
+                self._interp((time - self._start_time) % self._max_time, order),
+                self._interp_init(time, order),
             ),
-            self._interp_init(time, order),
+            self._interp_finish(time - self._done_time, order),
         )
-
-    def graph_interp(self, joint_idx: int, save: bool = False):
-        assert self._interp is not None and joint_idx < len(self.arm_joints)
-        xs = np.arange(
-            self._start_time - 0.5, self._max_time + self._start_time + 0.5, 0.1
-        )
-        fig, ax = plt.subplots(figsize=(6.5, 4))
-        ax.plot(xs, self._interp(xs)[:, joint_idx], label="S")
-        ax.plot(xs, self._interp(xs, 1)[:, joint_idx], label="S'")
-        ax.plot(xs, self._interp(xs, 2)[:, joint_idx], label="S''")
-        ax.plot(xs, self._interp(xs, 3)[:, joint_idx], label="S'''")
-        ax.set_xlim(self._start_time - 0.5, self._max_time + self._start_time + 0.5)
-
-        ax.legend(loc="lower left", ncol=2)
-
-        if save:
-            plt.savefig("joints.png")
-        else:
-            plt.show()
 
     def _graph_all_interp(
         self,
@@ -352,6 +385,7 @@ class JointAnglesController:
         x_pts: List[float],
         y_pts: List[List[float]],
         save: bool = False,
+        include_actual: bool = False,
         plot_prefix: str = "",
         vlines: List[float] = [],
     ) -> None:
@@ -362,8 +396,14 @@ class JointAnglesController:
 
         labels = np.arange(len(self.arm_joints))
         pos_ax.plot(x_pts, y_pts, marker="o", linestyle="none")
-        pos_ax.plot(xs, interp(xs), label=labels)
-        vel_ax.plot(xs, interp(xs, 1), label=labels)
+        if include_actual:
+            pos_ax.plot(self._joint_data[0], self._joint_data[1])
+            vel_ax.plot(self._joint_data[0], self._joint_data[2])
+            pos_ax.plot(xs, interp(xs), label=labels, linestyle="--")
+            vel_ax.plot(xs, interp(xs, 1), label=labels, linestyle="--")
+        else:
+            pos_ax.plot(xs, interp(xs), label=labels)
+            vel_ax.plot(xs, interp(xs, 1), label=labels)
         acc_ax.plot(xs, interp(xs, 2), label=labels)
 
         for ax in [pos_ax, vel_ax, acc_ax]:
@@ -382,40 +422,75 @@ class JointAnglesController:
         else:
             plt.show()
 
-    def graph_full_interp(self, *, save: bool = False, prefix: str = "") -> None:
-        x_pts = [
-            *self._init_cmd_queue[0],
-            *list(accumulate(self._cmd_queue[0])),
-            self._max_time + self._start_time,
-        ]
-        y_pts = [*self._init_cmd_queue[1], *self._cmd_queue[1], self._cmd_queue[1][0]]
+    def graph_full_interp(
+        self, *, save: bool = False, prefix: str = "", include_actual: bool = False
+    ) -> None:
+        x_pts = [0.0, self._start_time]
+        y_pts = [*self._init_cmd_queue[1]]
+        for i in range(self._n_iters):
+            x_pts.extend(
+                list(
+                    accumulate(
+                        self._cmd_queue[0],
+                        initial=self._start_time + i * self._max_time,
+                    )
+                )[1:]
+            )
+            y_pts.extend([*self._cmd_queue[1][1:], self._cmd_queue[1][0]])
+        x_pts.extend([self._done_time, self._done_time + self._start_time])
+        y_pts.extend(self._finish_cmd_queue[1])
         self._graph_all_interp(
             self.vectorized_interp,
             xmin=0.0,
-            xmax=self._max_time + self._start_time,
+            xmax=self._done_time + self._start_time,
             x_pts=x_pts,
             y_pts=y_pts,
             save=save,
             plot_prefix=prefix,
-            vlines=[self._start_time],
+            vlines=[self._start_time, self._done_time],
+            include_actual=include_actual,
         )
+
+    def graph_actual(self, *, save: bool = False) -> None:
+        pos_fig, pos_ax = plt.subplots(figsize=(6.5, 4))
+        vel_fig, vel_ax = plt.subplots(figsize=(6.5, 4))
+
+        labels = np.arange(len(self.arm_joints))
+        pos_ax.plot(self._joint_data[0], self._joint_data[1])
+        vel_ax.plot(self._joint_data[0], self._joint_data[2])
+
+        for ax in [pos_ax, vel_ax]:
+            ax.set_xlim(min(self._joint_data[0]), max(self._joint_data[0]))
+            ax.legend(loc="lower left", ncol=2)
+            for vline in [self._start_time, self._done_time]:
+                ax.axvline(vline, ls=":", c=(1, 0, 0))
+
+        pos_ax.set_title("Recorded Joint Position")
+        vel_ax.set_title("Recorded Joint Velocity")
+        if save:
+            pos_fig.savefig("actual_joint_pos.png")
+            vel_fig.savefig("actual_joint_vel.png")
+        else:
+            plt.show()
 
 
 if __name__ == "__main__":
     ChannelFactoryInitialize(1, "lo")
 
     controller = JointAnglesController()
-    controller.init(SPRINKLER_CMD)
+    controller.init(DISCO_CMD)
     controller.start()
 
     time.sleep(1)
     # controller.graph_main_interp(save=True)
     # controller.graph_init_interp(save=True)
-    controller.graph_full_interp(save=True, prefix="sprinkler_")
-    print("Created graphs")
 
     while True:
         time.sleep(1)
         if controller.done:
             print("Done!")
+            controller.graph_full_interp(
+                save=True, prefix="disco_", include_actual=True
+            )
+            print("Created graphs")
             sys.exit(-1)
