@@ -180,6 +180,7 @@ class JointAnglesController:
             # G1JointIndex.WaistPitch,
         ]
         self._leg_joints: List[int] = [
+            G1JointIndex.WaistYaw,
             G1JointIndex.LeftHipPitch,
             G1JointIndex.LeftHipRoll,
             G1JointIndex.LeftHipYaw,
@@ -194,7 +195,6 @@ class JointAnglesController:
             G1JointIndex.RightAnkleRoll,
         ]
         self._hip_joints: List[int] = [
-            G1JointIndex.WaistYaw,
             G1JointIndex.WaistRoll,
             G1JointIndex.WaistPitch,
         ]
