@@ -19,8 +19,8 @@ from typing import Tuple, List, Optional
 
 import numpy as np
 
-SPRINKLER_BPM = 220
-DISCO_BPM = 110
+SPRINKLER_BPM = 50  # 220
+DISCO_BPM = 50  # 110
 
 DISCO_UP = [
     -np.pi / 2,
