@@ -19,7 +19,7 @@ from typing import Tuple, List, Optional
 
 import numpy as np
 
-SPRINKLER_BPM = 50  # 220
+SPRINKLER_BPM = 220
 DISCO_BPM = 110
 
 DISCO_UP = [
@@ -148,7 +148,7 @@ class JointAnglesController:
         self._n_iters: int = 4
 
         self._time: float = 0.0
-        self._control_dt: float = 0.02
+        self._control_dt: float = 0.005
         self._low_cmd: LowCmd_ = unitree_hg_msg_dds__LowCmd_()
         self._low_state: Optional[LowState_] = None
         self._crc = CRC()
@@ -168,11 +168,7 @@ class JointAnglesController:
         self._max_time: float = 0.0
         self._loop: bool = False
 
-        self._joint_data: Tuple[List[float], List[List[float]], List[List[float]]] = (
-            [],
-            [],
-            [],
-        )
+        self._joint_data: List[Tuple[float, List[float], List[float]]] = []
 
         self.arm_joints: List[int] = [
             G1JointIndex.LeftShoulderPitch,
@@ -238,9 +234,13 @@ class JointAnglesController:
 
     def _low_state_handler(self, msg: LowState_) -> None:
         self._low_state = msg
-        self._joint_data[0].append(self._time)
-        self._joint_data[1].append(self._arm_joint_pos_from_msg(msg))
-        self._joint_data[2].append(self._arm_joint_vel_from_msg(msg))
+        self._joint_data.append(
+            (
+                self._time,
+                self._arm_joint_pos_from_msg(msg),
+                self._arm_joint_vel_from_msg(msg),
+            )
+        )
         if not self._done_first_update.is_set():
             self._compute_interpolation(msg)
             self._done_first_update.set()
@@ -405,8 +405,9 @@ class JointAnglesController:
         labels = np.arange(len(self.arm_joints))
         pos_ax.plot(x_pts, y_pts, marker="o", linestyle="none")
         if include_actual:
-            pos_ax.plot(self._joint_data[0], self._joint_data[1])
-            vel_ax.plot(self._joint_data[0], self._joint_data[2])
+            joint_time, joint_pos, joint_vel = zip(*self._joint_data.copy())
+            pos_ax.plot(joint_time, joint_pos)
+            vel_ax.plot(joint_time, joint_vel)
             pos_ax.plot(xs, interp(xs), label=labels, linestyle="--")
             vel_ax.plot(xs, interp(xs, 1), label=labels, linestyle="--")
         else:
@@ -459,34 +460,12 @@ class JointAnglesController:
             include_actual=include_actual,
         )
 
-    def graph_actual(self, *, save: bool = False) -> None:
-        pos_fig, pos_ax = plt.subplots(figsize=(6.5, 4))
-        vel_fig, vel_ax = plt.subplots(figsize=(6.5, 4))
-
-        labels = np.arange(len(self.arm_joints))
-        pos_ax.plot(self._joint_data[0], self._joint_data[1])
-        vel_ax.plot(self._joint_data[0], self._joint_data[2])
-
-        for ax in [pos_ax, vel_ax]:
-            ax.set_xlim(min(self._joint_data[0]), max(self._joint_data[0]))
-            ax.legend(loc="lower left", ncol=2)
-            for vline in [self._start_time, self._done_time]:
-                ax.axvline(vline, ls=":", c=(1, 0, 0))
-
-        pos_ax.set_title("Recorded Joint Position")
-        vel_ax.set_title("Recorded Joint Velocity")
-        if save:
-            pos_fig.savefig("actual_joint_pos.png")
-            vel_fig.savefig("actual_joint_vel.png")
-        else:
-            plt.show()
-
 
 if __name__ == "__main__":
     ChannelFactoryInitialize(1, "lo")
 
     controller = JointAnglesController()
-    controller.init(DISCO_CMD)
+    controller.init(SPRINKLER_CMD)
     controller.start()
     # controller.graph_main_interp(save=True)
     # controller.graph_init_interp(save=True)
@@ -497,7 +476,7 @@ if __name__ == "__main__":
             time.sleep(1)
             print("Done!")
             controller.graph_full_interp(
-                save=True, prefix="disco_", include_actual=True
+                save=True, prefix="sprinkler_", include_actual=True
             )
             print("Created graphs")
             sys.exit(-1)
