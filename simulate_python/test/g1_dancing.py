@@ -164,7 +164,7 @@ class JointAnglesController:
         self._interp_init: Optional[PPoly] = None
         self._interp: Optional[PPoly] = None
         self._interp_finish: Optional[PPoly] = None
-        self._start_time: float = 5.0
+        self._start_time: float = 1.0
         self._max_time: float = 0.0
         self._loop: bool = False
 
@@ -238,10 +238,9 @@ class JointAnglesController:
 
     def _low_state_handler(self, msg: LowState_) -> None:
         self._low_state = msg
-        if not self.done:
-            self._joint_data[0].append(self._time)
-            self._joint_data[1].append(self._arm_joint_pos_from_msg(msg))
-            self._joint_data[2].append(self._arm_joint_vel_from_msg(msg))
+        self._joint_data[0].append(self._time)
+        self._joint_data[1].append(self._arm_joint_pos_from_msg(msg))
+        self._joint_data[2].append(self._arm_joint_vel_from_msg(msg))
         if not self._done_first_update.is_set():
             self._compute_interpolation(msg)
             self._done_first_update.set()
@@ -356,7 +355,7 @@ class JointAnglesController:
         elif time < self._done_time + self._start_time:
             return self._interp_finish(time - self._done_time, order)
         else:
-            return self._interp_finish(self._done_time + self._start_time)
+            return self._interp_finish(self._start_time, order)
 
     def vectorized_interp(self, time: np.ndarray, order: int = 0) -> np.ndarray:
         assert self._interp is not None and self._interp_init is not None
@@ -366,14 +365,23 @@ class JointAnglesController:
         time_end_ar = np.repeat(
             (time <= self._done_time)[:, np.newaxis], len(self.arm_joints), -1
         )
+        time_terminate_ar = np.repeat(
+            (time < self._done_time + self._start_time)[:, np.newaxis],
+            len(self.arm_joints),
+            -1,
+        )
         return np.where(
-            time_end_ar,
+            time_terminate_ar,
             np.where(
-                time_start_ar,
-                self._interp((time - self._start_time) % self._max_time, order),
-                self._interp_init(time, order),
+                time_end_ar,
+                np.where(
+                    time_start_ar,
+                    self._interp((time - self._start_time) % self._max_time, order),
+                    self._interp_init(time, order),
+                ),
+                self._interp_finish(time - self._done_time, order),
             ),
-            self._interp_finish(time - self._done_time, order),
+            self._interp_finish(self._start_time, order),
         )
 
     def _graph_all_interp(
@@ -442,7 +450,7 @@ class JointAnglesController:
         self._graph_all_interp(
             self.vectorized_interp,
             xmin=0.0,
-            xmax=self._done_time + self._start_time,
+            xmax=self._done_time + self._start_time + 1,
             x_pts=x_pts,
             y_pts=y_pts,
             save=save,
@@ -480,14 +488,13 @@ if __name__ == "__main__":
     controller = JointAnglesController()
     controller.init(DISCO_CMD)
     controller.start()
-
-    time.sleep(1)
     # controller.graph_main_interp(save=True)
     # controller.graph_init_interp(save=True)
 
     while True:
         time.sleep(1)
         if controller.done:
+            time.sleep(1)
             print("Done!")
             controller.graph_full_interp(
                 save=True, prefix="disco_", include_actual=True
