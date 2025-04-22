@@ -3,7 +3,7 @@ import sys
 from threading import Lock, Event
 from scipy.interpolate import make_interp_spline, PPoly
 from itertools import accumulate
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 
 from unitree_sdk2py.core.channel import (
     ChannelPublisher,
@@ -16,11 +16,12 @@ from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 from unitree_sdk2py.utils.crc import CRC
 from unitree_sdk2py.utils.thread import RecurrentThread
 from typing import Tuple, List, Optional
+from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
 
 import numpy as np
 
 SPRINKLER_BPM = 220
-DISCO_BPM = 110
+DISCO_BPM = 50
 
 DISCO_UP = [
     -np.pi / 2,
@@ -144,11 +145,13 @@ class G1JointIndex:
 class JointAnglesController:
     def __init__(self):
         self.kp: float = 20.0
-        self.kd: float = 1.5
+        self.kd: float = 1.0
         self._n_iters: int = 4
 
+        self.mode_machine_ = 0
+
         self._time: float = 0.0
-        self._control_dt: float = 0.005
+        self._control_dt: float = 0.02
         self._low_cmd: LowCmd_ = unitree_hg_msg_dds__LowCmd_()
         self._low_state: Optional[LowState_] = None
         self._crc = CRC()
@@ -214,6 +217,16 @@ class JointAnglesController:
         return self._time >= self._done_time + self._start_time
 
     def init(self, cmd_queue: Tuple[List[float], List[List[float]]], loop=True) -> None:
+        self.msc = MotionSwitcherClient()
+        self.msc.SetTimeout(5.0)
+        self.msc.Init()
+
+        status, result = self.msc.CheckMode()
+        while result['name']:
+            self.msc.ReleaseMode()
+            status, result = self.msc.CheckMode()
+            time.sleep(1)
+
         # create publisher
         self._arm_sdk_publisher = ChannelPublisher("rt/lowcmd", LowCmd_)
         self._arm_sdk_publisher.Init()
@@ -243,6 +256,7 @@ class JointAnglesController:
         )
         if not self._done_first_update.is_set():
             self._compute_interpolation(msg)
+            self.mode_machine_ = self._low_state.mode_machine
             self._done_first_update.set()
 
     def _low_cmd_write(self) -> None:
@@ -258,6 +272,7 @@ class JointAnglesController:
                 self.interp(self._time, 1)[i],
                 self.kp,
                 self.kd,
+                True
             )
         for joint in self._leg_joints:
             self._update_low_cmd(joint, 0.0, 0.0, self.kp, self.kd)
@@ -274,7 +289,12 @@ class JointAnglesController:
         dq_des,
         kp: Optional[float] = None,
         kd: Optional[float] = None,
+        enable: bool = False
     ) -> None:
+        if enable:
+            self._low_cmd.motor_cmd[joint].mode = 1
+            self._low_cmd.mode_machine = self.mode_machine_
+
         if kp is None:
             kp = self.kp
         if kd is None:
@@ -465,7 +485,7 @@ if __name__ == "__main__":
     ChannelFactoryInitialize(1, "lo")
 
     controller = JointAnglesController()
-    controller.init(SPRINKLER_CMD)
+    controller.init(DISCO_CMD)
     controller.start()
     # controller.graph_main_interp(save=True)
     # controller.graph_init_interp(save=True)
@@ -475,8 +495,8 @@ if __name__ == "__main__":
         if controller.done:
             time.sleep(1)
             print("Done!")
-            controller.graph_full_interp(
-                save=True, prefix="sprinkler_", include_actual=True
-            )
-            print("Created graphs")
+            # controller.graph_full_interp(
+                # save=True, prefix="disco_", include_actual=True
+            # )
+            # print("Created graphs")
             sys.exit(-1)
