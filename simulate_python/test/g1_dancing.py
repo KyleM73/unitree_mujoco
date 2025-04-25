@@ -1,9 +1,10 @@
 import time
 import sys
+import os
 from threading import Lock, Event
 from scipy.interpolate import make_interp_spline, PPoly
 from itertools import accumulate
-# import matplotlib.pyplot as plt
+import argparse
 
 from unitree_sdk2py.core.channel import (
     ChannelPublisher,
@@ -16,12 +17,20 @@ from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowState_
 from unitree_sdk2py.utils.crc import CRC
 from unitree_sdk2py.utils.thread import RecurrentThread
 from typing import Tuple, List, Optional
-from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
+from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
+    MotionSwitcherClient,
+)
 
 import numpy as np
 
+parser = argparse.ArgumentParser(prog="g1_dancing")
+parser.add_argument("dance_move", choices=["disco", "sprinkler", "cabbage_patch"])
+parser.add_argument("-r", "--robot")
+parser.add_argument("-sg", "--skip_graph", action="store_true")
+
 SPRINKLER_BPM = 220
 DISCO_BPM = 50
+CABBAGE_PATCH_BPM = 90
 
 DISCO_UP = [
     -np.pi / 2,
@@ -34,9 +43,6 @@ DISCO_UP = [
     np.pi / 2,
     -np.pi / 8,
     0.0,
-    # 0.0,
-    # 0.0,
-    # 0.0,
 ]
 
 DISCO_DOWN = [
@@ -50,9 +56,6 @@ DISCO_DOWN = [
     np.pi / 2,
     -np.pi / 8,
     0.0,
-    # 0.0,
-    # 0.0,
-    # 0.0,
 ]
 
 SPRINKLER_OPEN = [
@@ -66,9 +69,6 @@ SPRINKLER_OPEN = [
     0.0,
     -np.pi / 3,
     0.0,
-    # 0.0,
-    # 0.0,
-    # 0.0,
 ]
 
 SPRINKLER_CLOSED = [
@@ -82,9 +82,58 @@ SPRINKLER_CLOSED = [
     0.0,
     -np.pi / 3,
     0.0,
-    # 0.0,
-    # 0.0,
-    # 0.0,
+]
+
+# CABBAGE_PATCH_OUT = [
+#     -np.pi / 3,
+#     0.0,
+#     0.0,
+#     np.pi / 3,
+#     0.0,
+#     -np.pi / 3,
+#     0.0,
+#     0.0,
+#     np.pi / 3,
+#     0.0,
+# ]
+
+CABBAGE_PATCH_IN = [
+    np.pi / 4,
+    np.pi / 8,
+    -np.pi / 8,
+    -np.pi / 3,
+    0.0,
+    np.pi / 4,
+    -np.pi / 8,
+    np.pi / 8,
+    -np.pi / 3,
+    0.0,
+]
+
+CABBAGE_PATCH_LEFT = [
+    -np.pi / 4,
+    np.pi / 8,
+    0.0,
+    np.pi / 4,
+    0.0,
+    -np.pi / 4,
+    np.pi / 24,
+    np.pi / 8,
+    np.pi / 4,
+    0.0,
+]
+
+CABBAGE_PATCH_RIGHT = [
+    -np.pi / 4,
+    -np.pi / 24,
+    -np.pi / 8,
+    np.pi / 4,
+    0.0,
+    -np.pi / 4,
+    -np.pi / 8,
+    0.0,
+    np.pi / 4,
+    0.0,
 ]
 
 DISCO_CMD = ([60.0 / DISCO_BPM, 60.0 / DISCO_BPM], [DISCO_DOWN, DISCO_UP])
@@ -92,6 +141,20 @@ SPRINKLER_CMD = (
     [60.0 / SPRINKLER_BPM, 60.0 / SPRINKLER_BPM],
     [SPRINKLER_OPEN, SPRINKLER_CLOSED],
 )
+CABBAGE_PATCH_CMD = (
+    [
+        60.0 / CABBAGE_PATCH_BPM,
+        60.0 / CABBAGE_PATCH_BPM,
+        60.0 / CABBAGE_PATCH_BPM,
+    ],
+    [CABBAGE_PATCH_IN, CABBAGE_PATCH_RIGHT, CABBAGE_PATCH_LEFT],
+)
+
+DANCES = {
+    "disco": DISCO_CMD,
+    "sprinkler": SPRINKLER_CMD,
+    "cabbage_patch": CABBAGE_PATCH_CMD,
+}
 
 
 class G1JointIndex:
@@ -143,10 +206,11 @@ class G1JointIndex:
 
 
 class JointAnglesController:
-    def __init__(self):
+    def __init__(self, using_robot: bool):
         self.kp: float = 20.0
         self.kd: float = 1.0
         self._n_iters: int = 4
+        self._using_robot: bool = using_robot
 
         self.mode_machine_ = 0
 
@@ -222,7 +286,7 @@ class JointAnglesController:
         self.msc.Init()
 
         status, result = self.msc.CheckMode()
-        while result['name']:
+        while self._using_robot and result["name"]:
             self.msc.ReleaseMode()
             status, result = self.msc.CheckMode()
             time.sleep(1)
@@ -272,7 +336,7 @@ class JointAnglesController:
                 self.interp(self._time, 1)[i],
                 self.kp,
                 self.kd,
-                True
+                True,
             )
         for joint in self._leg_joints:
             self._update_low_cmd(joint, 0.0, 0.0, self.kp, self.kd)
@@ -289,7 +353,7 @@ class JointAnglesController:
         dq_des,
         kp: Optional[float] = None,
         kd: Optional[float] = None,
-        enable: bool = False
+        enable: bool = False,
     ) -> None:
         if enable:
             self._low_cmd.motor_cmd[joint].mode = 1
@@ -445,9 +509,10 @@ class JointAnglesController:
         vel_ax.set_title("Joint Velocity Interpolation")
         acc_ax.set_title("Joint Acceleration Interpolation")
         if save:
-            pos_fig.savefig(f"{plot_prefix}joint_pos.png")
-            vel_fig.savefig(f"{plot_prefix}joint_vel.png")
-            acc_fig.savefig(f"{plot_prefix}joint_acc.png")
+            dir_path = os.path.dirname(os.path.realpath(__file__))
+            pos_fig.savefig(f"{dir_path}/graphs/{plot_prefix}joint_pos.png")
+            vel_fig.savefig(f"{dir_path}/graphs/{plot_prefix}joint_vel.png")
+            acc_fig.savefig(f"{dir_path}/graphs/{plot_prefix}joint_acc.png")
         else:
             plt.show()
 
@@ -482,21 +547,24 @@ class JointAnglesController:
 
 
 if __name__ == "__main__":
-    ChannelFactoryInitialize(1, "lo")
+    args = parser.parse_args()
+    if args.robot:
+        ChannelFactoryInitialize(0, args.robot)
+    else:
+        ChannelFactoryInitialize(1, "lo")
 
-    controller = JointAnglesController()
-    controller.init(DISCO_CMD)
+    controller = JointAnglesController(args.robot is not None)
+    controller.init(DANCES[args.dance_move])
     controller.start()
-    # controller.graph_main_interp(save=True)
-    # controller.graph_init_interp(save=True)
 
-    while True:
+    while not controller.done:
         time.sleep(1)
-        if controller.done:
-            time.sleep(1)
-            print("Done!")
-            # controller.graph_full_interp(
-                # save=True, prefix="disco_", include_actual=True
-            # )
-            # print("Created graphs")
-            sys.exit(-1)
+    print("Done!")
+    if not args.skip_graph:
+        import matplotlib.pyplot as plt
+
+        controller.graph_full_interp(
+            save=True, prefix=f"{args.dance_move}_", include_actual=True
+        )
+        print("Created graphs")
+    sys.exit(-1)
