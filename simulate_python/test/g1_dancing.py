@@ -211,6 +211,8 @@ class JointAnglesController:
     def __init__(self, using_robot: bool):
         self.kp: float = 20.0
         self.kd: float = 1.0
+        self.hip_kp: float = 40.0
+        self.hip_kd: float = 1.0
         self._n_iters: int = 8
         self._using_robot: bool = using_robot
 
@@ -261,8 +263,10 @@ class JointAnglesController:
             G1JointIndex.RightElbow,
             G1JointIndex.RightWristRoll,
         ]
-        self._leg_joints: List[int] = [
+        self._waist_yaw: List[int] = [
             G1JointIndex.WaistYaw,
+        ]
+        self._leg_joints: List[int] = [
             G1JointIndex.LeftHipPitch,
             G1JointIndex.LeftHipRoll,
             G1JointIndex.LeftHipYaw,
@@ -350,6 +354,8 @@ class JointAnglesController:
                     self.kd,
                     True,
                 )
+        for joint in self._waist_yaw:
+            self._update_low_cmd(joint, 0.0, 0.0, self.hip_kp, self.hip_kd, True)
         for joint in self._leg_joints:
             self._update_low_cmd(joint, 0.0, 0.0, self.kp, self.kd)
         for joint in self._hip_joints:
