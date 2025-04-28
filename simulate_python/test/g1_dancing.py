@@ -28,6 +28,8 @@ parser.add_argument("dance_move", choices=["disco", "sprinkler", "cabbage_patch"
 parser.add_argument("-r", "--robot")
 parser.add_argument("-sg", "--skip_graph", action="store_true")
 
+RIGHT_ARM_BROKEN = True
+
 SPRINKLER_BPM = 200
 DISCO_BPM = 50
 CABBAGE_PATCH_BPM = 90
@@ -36,11 +38,7 @@ DISCO_UP = [
     -3 * np.pi / 4,
     2 * np.pi / 4,
     -np.pi / 8,
-    # 0.0,
-    # 7 * np.pi / 8,
-    # np.pi / 2,
     2 * np.pi / 5,
-    0.0,  # -np.pi / 2,
     0.0,
     -3 * np.pi / 8,
     np.pi / 2,
@@ -255,6 +253,13 @@ class JointAnglesController:
             # G1JointIndex.WaistRoll,
             # G1JointIndex.WaistPitch,
         ]
+        self._right_arm_joints: List[int] = [
+            G1JointIndex.RightShoulderPitch,
+            G1JointIndex.RightShoulderRoll,
+            G1JointIndex.RightShoulderYaw,
+            G1JointIndex.RightElbow,
+            G1JointIndex.RightWristRoll,
+        ]
         self._leg_joints: List[int] = [
             G1JointIndex.WaistYaw,
             G1JointIndex.LeftHipPitch,
@@ -333,14 +338,17 @@ class JointAnglesController:
         self._time += self._control_dt
 
         for i, joint in enumerate(self.arm_joints):
-            self._update_low_cmd(
-                joint,
-                self.interp(self._time)[i],
-                self.interp(self._time, 1)[i],
-                self.kp,
-                self.kd,
-                True,
-            )
+            if RIGHT_ARM_BROKEN and joint in self._right_arm_joints:
+                self._update_low_cmd(joint, 0.0, 0.0, 0.0, 0.0, False)
+            else:
+                self._update_low_cmd(
+                    joint,
+                    self.interp(self._time)[i],
+                    self.interp(self._time, 1)[i],
+                    self.kp,
+                    self.kd,
+                    True,
+                )
         for joint in self._leg_joints:
             self._update_low_cmd(joint, 0.0, 0.0, self.kp, self.kd)
         for joint in self._hip_joints:
