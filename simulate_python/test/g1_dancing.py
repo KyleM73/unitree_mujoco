@@ -456,7 +456,10 @@ class JointAnglesController:
             self._init_cmd_queue[1],
             k=5,
             bc_type=(
-                [(1, np.zeros(10)), (2, np.zeros(10))],
+                [
+                    (1, np.zeros(len(self.arm_joints))),
+                    (2, np.zeros(len(self.arm_joints))),
+                ],
                 [
                     (1, self._interp(0.0, 1)),
                     (2, self._interp(0.0, 2)),
@@ -472,7 +475,10 @@ class JointAnglesController:
                     (1, self._interp(0.0, 1)),
                     (2, self._interp(0.0, 2)),
                 ],
-                [(1, np.zeros(10)), (2, np.zeros(10))],
+                [
+                    (1, np.zeros(len(self.arm_joints))),
+                    (2, np.zeros(len(self.arm_joints))),
+                ],
             ),
         )
 
