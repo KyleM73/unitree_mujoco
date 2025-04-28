@@ -40,6 +40,7 @@ DISCO_UP = [
     -np.pi / 8,
     2 * np.pi / 5,
     0.0,
+    0.0,
     -3 * np.pi / 8,
     np.pi / 2,
     -np.pi / 8,
