@@ -28,15 +28,18 @@ parser.add_argument("dance_move", choices=["disco", "sprinkler", "cabbage_patch"
 parser.add_argument("-r", "--robot")
 parser.add_argument("-sg", "--skip_graph", action="store_true")
 
-SPRINKLER_BPM = 220
+SPRINKLER_BPM = 200
 DISCO_BPM = 50
 CABBAGE_PATCH_BPM = 90
 
 DISCO_UP = [
-    -np.pi / 2,
+    -3 * np.pi / 4,
     2 * np.pi / 4,
-    0.0,
-    np.pi / 2,
+    -np.pi / 8,
+    # 0.0,
+    # 7 * np.pi / 8,
+    # np.pi / 2,
+    2 * np.pi / 5,
     0.0,  # -np.pi / 2,
     0.0,
     -3 * np.pi / 8,
@@ -209,7 +212,7 @@ class JointAnglesController:
     def __init__(self, using_robot: bool):
         self.kp: float = 20.0
         self.kd: float = 1.0
-        self._n_iters: int = 4
+        self._n_iters: int = 8
         self._using_robot: bool = using_robot
 
         self.mode_machine_ = 0
