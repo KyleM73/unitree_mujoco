@@ -391,7 +391,7 @@ class JointAnglesController:
         for joint in self._leg_joints:
             self._update_low_cmd(joint, 0.0, 0.0, self.kp, self.kd)
         for joint in self._hip_joints:
-            self._update_low_cmd(joint, 0.0, 0.0, 0.0, 0.0)
+            self._update_low_cmd(joint, 0.0, 0.0, self.hip_kp, self.hip_kd)
 
         self._low_cmd.crc = self._crc.Crc(self._low_cmd)
         self._arm_sdk_publisher.Write(self._low_cmd)
